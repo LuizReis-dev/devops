@@ -1,0 +1,84 @@
+- name: Deploy API na EC2
+  hosts: api_server
+  become: true
+  vars:
+    api_dir: /opt/api
+    db_name: dating_app
+    db_user: app_user
+    db_password: app_password
+    db_host: localstack
+    db_port: 4510
+
+  tasks:
+    - name: Criar diretorio da aplicacao
+      file:
+        path: "{{ api_dir }}"
+        state: directory
+
+    - name: Copiar arquivos da API
+      copy:
+        src: ../application/api-js/
+        dest: "{{ api_dir }}/"
+
+    - name: Instalar dependencias npm
+      command: npm install
+      args:
+        chdir: "{{ api_dir }}"
+
+    - name: Criar .env fixo da API
+      copy:
+        dest: "{{ api_dir }}/.env"
+        mode: "0600"
+        content: |
+          DB_NAME={{ db_name }}
+          DB_USER={{ db_user }}
+          DB_PASSWORD={{ db_password }}
+          DB_HOST={{ db_host }}
+          DB_PORT={{ db_port }}
+          DB_DIALECT=postgres
+          PORT=3000
+
+    - name: Aguardar RDS criado pelo Terraform
+      wait_for:
+        host: "{{ db_host }}"
+        port: "{{ db_port }}"
+        timeout: 120
+
+    - name: Iniciar API em background
+      shell: |
+        pkill -f "node index.js" || true
+        nohup npm start > /var/log/api.log 2>&1 &
+      args:
+        chdir: "{{ api_dir }}"
+
+    - name: Aguardar API iniciar
+      wait_for:
+        port: 3000
+        delay: 2
+        timeout: 60
+
+    - name: Inserir usuarios no RDS
+      shell: |
+        PGPASSWORD="{{ db_password }}" psql \
+          --host="{{ db_host }}" \
+          --port="{{ db_port }}" \
+          --username="{{ db_user }}" \
+          --dbname="{{ db_name }}" \
+          --set=ON_ERROR_STOP=1 <<'SQL'
+        INSERT INTO usuarios
+          (nome, email, senha, data_nascimento, genero, bio, criado_em)
+        VALUES
+          ('Luiz Reis', 'luiz.reis@example.com', 'senha123', '1996-04-12', 'masculino', 'Gosta de tecnologia e viagens.', NOW()),
+          ('Bruno Lima', 'bruno.lima@example.com', 'senha123', '1993-09-21', 'masculino', 'DevOps, musica e cafe.', NOW()),
+          ('Carla Mendes', 'carla.mendes@example.com', 'senha123', '1998-01-30', 'feminino', 'Fotografia e trilhas nos finais de semana.', NOW())
+        ON CONFLICT (email) DO NOTHING;
+        SQL
+
+    - name: Verificar API
+      command: curl --fail --silent http://localhost:3000/health
+      register: response
+      changed_when: false
+
+    - name: Mostrar resposta
+      debug:
+        var: response.stdout
