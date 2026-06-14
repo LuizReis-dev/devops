@@ -1,0 +1,4 @@
+.terraform
+.terraform.lock.hcl
+*.tfstate
+floci-api.pem
